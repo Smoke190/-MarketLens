@@ -19,45 +19,44 @@ class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"MarketLens is running")
+        self.wfile.write(b"MarketLens OK")
 
     def log_message(self, format, *args):
         pass
 
 
-def run_web_server():
+def start_server():
     server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
     server.serve_forever()
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🧠 MarketLens v0.1\n\n"
-        "Пришли скриншот графика.\n"
-        "Я подготовлю технический анализ."
+        "🧠 MarketLens v0.1 запущен!\n\n"
+        "Пришли скриншот графика."
     )
 
 
-async def analyze_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📊 Скриншот получен!\n\n"
-        "MarketLens анализирует график.\n"
-        "Technical Engine пока находится в разработке."
+        "MarketLens пока находится в тестовом режиме."
     )
 
 
 def main():
     if not TOKEN:
-        raise RuntimeError("BOT_TOKEN is not set")
+        raise RuntimeError("BOT_TOKEN не найден")
 
-    threading.Thread(target=run_web_server, daemon=True).start()
+    threading.Thread(target=start_server, daemon=True).start()
 
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.PHOTO, analyze_image))
+    app.add_handler(MessageHandler(filters.PHOTO, photo))
 
-    print("MarketLens started")
+    print("MarketLens started successfully")
+
     app.run_polling()
 
 
