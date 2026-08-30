@@ -1,9 +1,11 @@
 import os
+import asyncio
 import logging
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from threading import Thread
+import requests
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -12,238 +14,485 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from gradio_client import Client, handle_file
 # ============================================================
 # MARKETLENS v0.9
-# Telegram + Qwen2.5-VL Gradio Space
+# Telegram + Screenshot + Qwen Vision
 # ============================================================
+VERSION = "0.9"
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError(
         "BOT_TOKEN is not set in Render Environment Variables"
     )
-# ============================================================
+# ------------------------------------------------------------
 # QWEN SPACE
-# ============================================================
-VISION_SPACE = "developer0hye/Qwen2.5-VL-7B-Instruct"
-# Endpoint confirmed from the Space API
-VISION_API_NAME = "/qwen_vl_inference"
-# ============================================================
-# DIRECTORIES
-# ============================================================
+# ------------------------------------------------------------
+QWEN_SPACE = os.environ.get(
+    "QWEN_SPACE",
+    "developer0hye/Qwen2.5-VL-7B-Instruct"
+)
+QWEN_BASE_URL = os.environ.get(
+    "QWEN_BASE_URL",
+    f"https://{QWEN_SPACE}.hf.space"
+)
+QWEN_API_PATH = "/gradio_api/call/qwen_vl_inference"
+# ------------------------------------------------------------
+# DIRECT ENDPOINT OVERRIDE
+# ------------------------------------------------------------
+# If the Space changes its URL, you can put the complete URL
+# into Render Environment Variables as:
+#
+# QWEN_API_URL
+#
+# Example:
+# https://example.hf.space/gradio_api/call/qwen_vl_inference
+QWEN_API_URL = os.environ.get(
+    "QWEN_API_URL",
+    QWEN_BASE_URL + QWEN_API_PATH
+)
+# ------------------------------------------------------------
+# DIRECT FILE UPLOAD ENDPOINT
+# ------------------------------------------------------------
+QWEN_UPLOAD_URL = os.environ.get(
+    "QWEN_UPLOAD_URL",
+    QWEN_BASE_URL + "/gradio_api/upload"
+)
+# ------------------------------------------------------------
+# SETTINGS
+# ------------------------------------------------------------
+VISION_TIMEOUT = int(
+    os.environ.get("VISION_TIMEOUT", "180")
+)
+VISION_POLL_TIMEOUT = int(
+    os.environ.get("VISION_POLL_TIMEOUT", "180")
+)
 SCREENSHOTS_DIR = Path("screenshots")
-SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+SCREENSHOTS_DIR.mkdir(
+    parents=True,
+    exist_ok=True
+)
 # ============================================================
 # LOGGING
 # ============================================================
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("MarketLens")
 # ============================================================
-# RENDER HEALTH SERVER
+# HEALTH SERVER
 # ============================================================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
-        self.send_header("Content-Type", "text/plain")
+        self.send_header(
+            "Content-Type",
+            "text/plain; charset=utf-8"
+        )
         self.end_headers()
         self.wfile.write(
-            b"MarketLens v0.9 is running"
+            f"MarketLens v{VERSION} is running".encode()
         )
     def log_message(self, format, *args):
         return
 def start_http_server():
-    port = int(os.environ.get("PORT", "10000"))
+    port = int(
+        os.environ.get("PORT", "10000")
+    )
     server = HTTPServer(
         ("0.0.0.0", port),
-        HealthHandler,
+        HealthHandler
     )
     print(
         f"HTTP server started on port {port}"
     )
     server.serve_forever()
 # ============================================================
-# QWEN VISION
-# ============================================================
-def qwen_analyze_image(
-    image_path: str,
-    question: str,
-):
-    """
-    Sends image to Qwen2.5-VL Space using gradio_client.
-    """
-    print("[VISION] Connecting to Qwen Space...")
-    print(f"[VISION] Space: {VISION_SPACE}")
-    print(f"[VISION] Endpoint: {VISION_API_NAME}")
-    try:
-        client = Client(
-            VISION_SPACE
-        )
-        print("[VISION] Client connected")
-        print("[VISION] Preparing image...")
-        image = handle_file(
-            image_path
-        )
-        print("[VISION] Sending image to Qwen...")
-        result = client.predict(
-            image,
-            question,
-            api_name=VISION_API_NAME,
-        )
-        print("[VISION] Response received")
-        print(
-            f"[VISION] Result type: {type(result)}"
-        )
-        if result is None:
-            raise RuntimeError(
-                "Qwen returned empty result"
-            )
-        result_text = str(result).strip()
-        if not result_text:
-            raise RuntimeError(
-                "Qwen returned empty text"
-            )
-        print("[VISION] Analysis successful")
-        return result_text
-    except Exception as e:
-        logger.exception(
-            "[VISION ERROR]"
-        )
-        raise RuntimeError(
-            f"Qwen Vision error: {type(e).__name__}: {e}"
-        )
-# ============================================================
-# ASYNC WRAPPER
-# ============================================================
-async def analyze_with_vision(
-    image_path: str,
-    question: str,
-):
-    """
-    Runs blocking Gradio request
-    in a background thread.
-    """
-    import asyncio
-    return await asyncio.to_thread(
-        qwen_analyze_image,
-        image_path,
-        question,
-    )
-# ============================================================
-# START COMMAND
-# ============================================================
-async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    text = (
-        "🧠 MARKETLENS v0.9\n\n"
-        "Vision Engine: ONLINE\n"
-        "Qwen2.5-VL: CONNECTED\n\n"
-        "📸 Отправь скриншот TradingView.\n\n"
-        "Я:\n"
-        "1️⃣ Сохраню график\n"
-        "2️⃣ Передам его Qwen Vision\n"
-        "3️⃣ Получу описание графика\n"
-        "4️⃣ Верну анализ сюда\n\n"
-        "⚠️ Анализ является технической оценкой, "
-        "а не гарантией движения цены."
-    )
-    await update.message.reply_text(
-        text
-    )
-# ============================================================
-# HELP
-# ============================================================
-async def help_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    text = (
-        "🧠 MARKETLENS v0.9\n\n"
-        "/start — запуск\n"
-        "/help — помощь\n\n"
-        "📸 Просто отправь скриншот графика."
-    )
-    await update.message.reply_text(
-        text
-    )
-# ============================================================
 # VISION PROMPT
 # ============================================================
 VISION_PROMPT = """
-Ты — модуль технического анализа MarketLens.
-Проанализируй изображение торгового графика.
+Ты — технический аналитик MarketLens.
+Проанализируй предоставленный скриншот торгового графика.
 Определи:
-1. Текущее направление движения:
+1. Направление движения:
    UP / DOWN / SIDEWAYS
 2. Структуру рынка:
    - тренд
    - импульс
    - коррекция
-   - консолидация
-3. Ключевые уровни:
-   - ближайшее сопротивление
-   - ближайшая поддержка
-4. Поведение свечей:
-   - импульсные свечи
-   - поглощение
+   - пробой
    - ложный пробой
-   - отбой
-   - сжатие волатильности
-5. Если виден объём:
-   оцени подтверждает ли он движение.
-6. Сценарии:
-   основной сценарий
-   альтернативный сценарий
-7. Укажи, что должно произойти для подтверждения движения.
-Не выдумывай значения цены, которых невозможно прочитать
-на изображении.
-Ответ дай структурировано и коротко.
+3. Ключевые уровни:
+   - ближайшая поддержка
+   - ближайшее сопротивление
+4. Поведение свечей.
+5. Объём, если он присутствует на графике.
+6. Вероятный ближайший сценарий.
+7. Что должно произойти для подтверждения сценария.
+Не выдумывай данные, которых не видно.
+Ответ дай коротко и структурированно.
 Формат:
 📊 MARKETLENS ANALYSIS
 Направление: UP / DOWN / SIDEWAYS
-Сила сигнала: LOW / MEDIUM / HIGH
 Тренд:
 ...
-Поддержка:
+Уровень поддержки:
 ...
-Сопротивление:
+Уровень сопротивления:
 ...
-Свечи:
-...
-Основной сценарий:
-...
-Альтернативный сценарий:
+Сигнал:
 ...
 Подтверждение:
 ...
 Риск:
 ...
+Важно:
+анализ является вероятностным и не гарантирует движение цены.
 """
+# ============================================================
+# HELPERS
+# ============================================================
+def extract_text_from_result(data):
+    """
+    Пытается извлечь текст из разных вариантов ответа Gradio.
+    """
+    if data is None:
+        return None
+    if isinstance(data, str):
+        return data
+    if isinstance(data, list):
+        if not data:
+            return None
+        parts = []
+        for item in data:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                for key in (
+                    "text",
+                    "value",
+                    "output",
+                    "content"
+                ):
+                    if key in item:
+                        parts.append(
+                            str(item[key])
+                        )
+        if parts:
+            return "\n".join(parts)
+        return str(data)
+    if isinstance(data, dict):
+        for key in (
+            "text",
+            "value",
+            "output",
+            "content",
+            "result"
+        ):
+            if key in data:
+                return str(data[key])
+        return str(data)
+    return str(data)
+def parse_event_stream(response):
+    """
+    Разбор SSE stream от Gradio.
+    """
+    result = None
+    error = None
+    for raw_line in response.iter_lines(
+        decode_unicode=True
+    ):
+        if not raw_line:
+            continue
+        line = raw_line.strip()
+        if line.startswith("event:"):
+            event_type = line[
+                len("event:"):].strip()
+            if event_type == "error":
+                error = "Qwen Space returned error event"
+            elif event_type == "complete":
+                pass
+        elif line.startswith("data:"):
+            data_text = line[
+                len("data:"):].strip()
+            logger.info(
+                "[VISION STREAM] data: %s",
+                data_text[:1000]
+            )
+            if data_text == "null":
+                if error:
+                    error = (
+                        "Qwen Space returned "
+                        "error with null data"
+                    )
+                continue
+            try:
+                import json
+                parsed = json.loads(
+                    data_text
+                )
+                result = extract_text_from_result(
+                    parsed
+                )
+            except Exception:
+                result = data_text
+    if error and not result:
+        raise RuntimeError(error)
+    return result
+# ============================================================
+# UPLOAD IMAGE
+# ============================================================
+def upload_image(image_path):
+    logger.info(
+        "[VISION] Uploading image..."
+    )
+    if not Path(image_path).exists():
+        raise RuntimeError(
+            "Image file does not exist"
+        )
+    with open(
+        image_path,
+        "rb"
+    ) as f:
+        files = {
+            "files": (
+                Path(image_path).name,
+                f,
+                "image/jpeg"
+            )
+        }
+        response = requests.post(
+            QWEN_UPLOAD_URL,
+            files=files,
+            timeout=VISION_TIMEOUT
+        )
+    logger.info(
+        "[VISION] Upload HTTP: %s",
+        response.status_code
+    )
+    if response.status_code != 200:
+        raise RuntimeError(
+            "Qwen upload failed: "
+            f"HTTP {response.status_code}: "
+            f"{response.text[:1000]}"
+        )
+    try:
+        data = response.json()
+    except Exception as e:
+        raise RuntimeError(
+            "Qwen upload returned invalid JSON: "
+            f"{response.text[:1000]}"
+        ) from e
+    logger.info(
+        "[VISION] Upload result: %s",
+        str(data)[:1000]
+    )
+    if isinstance(data, list) and data:
+        uploaded_path = data[0]
+    elif isinstance(data, dict):
+        uploaded_path = (
+            data.get("path")
+            or data.get("url")
+        )
+    else:
+        uploaded_path = None
+    if not uploaded_path:
+        raise RuntimeError(
+            "Could not determine uploaded image path"
+        )
+    return uploaded_path
+# ============================================================
+# CREATE QWEN JOB
+# ============================================================
+def create_qwen_job(
+    uploaded_path,
+    prompt
+):
+    logger.info(
+        "[VISION] Creating Qwen job..."
+    )
+    payload = {
+        "data": [
+            {
+                "path": uploaded_path,
+                "url": None,
+                "size": None,
+                "orig_name": Path(
+                    uploaded_path
+                ).name,
+                "mime_type": "image/jpeg",
+                "is_stream": False,
+                "meta": {
+                    "_type": "gradio.FileData"
+                }
+            },
+            prompt
+        ]
+    }
+    response = requests.post(
+        QWEN_API_URL,
+        json=payload,
+        timeout=VISION_TIMEOUT
+    )
+    logger.info(
+        "[VISION] API HTTP: %s",
+        response.status_code
+    )
+    logger.info(
+        "[VISION] API response: %s",
+        response.text[:2000]
+    )
+    if response.status_code != 200:
+        raise RuntimeError(
+            "Qwen API failed: "
+            f"HTTP {response.status_code}: "
+            f"{response.text[:1500]}"
+        )
+    try:
+        data = response.json()
+    except Exception as e:
+        raise RuntimeError(
+            "Qwen API returned invalid JSON: "
+            f"{response.text[:1500]}"
+        ) from e
+    event_id = data.get(
+        "event_id"
+    )
+    if not event_id:
+        raise RuntimeError(
+            "Qwen API did not return event_id: "
+            f"{data}"
+        )
+    logger.info(
+        "[VISION] Event ID: %s",
+        event_id
+    )
+    return event_id
+# ============================================================
+# WAIT FOR RESULT
+# ============================================================
+def wait_for_qwen_result(
+    event_id
+):
+    result_url = (
+        QWEN_API_URL
+        + "/"
+        + event_id
+    )
+    logger.info(
+        "[VISION] Waiting for result..."
+    )
+    try:
+        with requests.get(
+            result_url,
+            stream=True,
+            timeout=VISION_POLL_TIMEOUT
+        ) as response:
+            logger.info(
+                "[VISION] Stream HTTP: %s",
+                response.status_code
+            )
+            if response.status_code != 200:
+                raise RuntimeError(
+                    "Qwen result stream failed: "
+                    f"HTTP {response.status_code}: "
+                    f"{response.text[:1500]}"
+                )
+            result = parse_event_stream(
+                response
+            )
+    except requests.RequestException as e:
+        raise RuntimeError(
+            f"Qwen result connection failed: {e}"
+        ) from e
+    if not result:
+        raise RuntimeError(
+            "Qwen returned an empty result"
+        )
+    return result
+# ============================================================
+# FULL VISION PIPELINE
+# ============================================================
+def qwen_analyze_image(
+    image_path
+):
+    logger.info(
+        "[VISION] Starting analysis..."
+    )
+    logger.info(
+        "[VISION] Space: %s",
+        QWEN_SPACE
+    )
+    logger.info(
+        "[VISION] API: %s",
+        QWEN_API_URL
+    )
+    uploaded_path = upload_image(
+        image_path
+    )
+    event_id = create_qwen_job(
+        uploaded_path,
+        VISION_PROMPT
+    )
+    result = wait_for_qwen_result(
+        event_id
+    )
+    return result
+async def analyze_with_vision(
+    image_path
+):
+    return await asyncio.to_thread(
+        qwen_analyze_image,
+        image_path
+    )
+# ============================================================
+# TELEGRAM COMMANDS
+# ============================================================
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    if not update.message:
+        return
+    await update.message.reply_text(
+        "🧠 MARKETLENS v0.9\n\n"
+        "Vision Engine подключён.\n\n"
+        "📸 Отправь скриншот TradingView.\n\n"
+        "Я сохраню его и отправлю "
+        "в Qwen Vision для анализа."
+    )
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    if not update.message:
+        return
+    await update.message.reply_text(
+        "🧠 MARKETLENS v0.9\n\n"
+        "/start — запуск\n"
+        "/help — помощь\n\n"
+        "📸 Просто отправь скриншот графика."
+    )
 # ============================================================
 # PHOTO HANDLER
 # ============================================================
 async def handle_photo(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    context: ContextTypes.DEFAULT_TYPE
 ):
     message = update.message
     if not message or not message.photo:
         return
     try:
         # ----------------------------------------------------
-        # TELEGRAM FILE
+        # Download Telegram image
         # ----------------------------------------------------
         photo = message.photo[-1]
-        telegram_file = await context.bot.get_file(
-            photo.file_id
+        telegram_file = await (
+            context.bot.get_file(
+                photo.file_id
+            )
         )
-        # ----------------------------------------------------
-        # FILE NAME
-        # ----------------------------------------------------
         now = datetime.now(
             timezone.utc
         )
@@ -261,94 +510,71 @@ async def handle_photo(
             f"{timestamp}.jpg"
         )
         filepath = (
-            SCREENSHOTS_DIR /
-            filename
+            SCREENSHOTS_DIR
+            / filename
         )
-        # ----------------------------------------------------
-        # DOWNLOAD
-        # ----------------------------------------------------
         await telegram_file.download_to_drive(
             custom_path=str(filepath)
         )
         size_kb = (
-            filepath.stat().st_size /
-            1024
+            filepath.stat().st_size
+            / 1024
         )
-        print(
-            f"[SCREENSHOT] Saved: {filepath}"
+        logger.info(
+            "[SCREENSHOT] Saved: %s",
+            filepath
         )
-        print(
-            f"[SCREENSHOT] Size: {size_kb:.1f} KB"
-        )
-        # ----------------------------------------------------
-        # USER MESSAGE
-        # ----------------------------------------------------
-        status_message = await message.reply_text(
-            "📸 СКРИНШОТ ПОЛУЧЕН\n\n"
-            f"💾 {filename}\n"
-            f"📦 {size_kb:.1f} KB\n\n"
-            "🧠 Отправляю график в Qwen Vision...\n"
-            "⏳ Подожди немного."
+        logger.info(
+            "[SCREENSHOT] Size: %.1f KB",
+            size_kb
         )
         # ----------------------------------------------------
-        # VISION
+        # Inform user
+        # ----------------------------------------------------
+        status_message = await (
+            message.reply_text(
+                "📸 СКРИНШОТ ПОЛУЧЕН\n\n"
+                f"💾 Файл: {filename}\n"
+                f"📦 Размер: {size_kb:.1f} KB\n\n"
+                "🧠 MarketLens Vision v0.9\n"
+                "⏳ Анализирую график..."
+            )
+        )
+        # ----------------------------------------------------
+        # Vision
         # ----------------------------------------------------
         try:
             result = await analyze_with_vision(
-                str(filepath),
-                VISION_PROMPT,
+                filepath
+            )
+            logger.info(
+                "[VISION] Analysis completed"
+            )
+            await status_message.edit_text(
+                "🧠 MARKETLENS v0.9\n\n"
+                f"{result}"
             )
         except Exception as vision_error:
             logger.exception(
                 "[VISION ERROR]"
             )
+            error_text = str(
+                vision_error
+            )
             await status_message.edit_text(
-                "❌ Vision Engine не смог обработать график.\n\n"
-                f"Ошибка: {type(vision_error).__name__}\n\n"
+                "❌ Vision Engine не смог "
+                "обработать график.\n\n"
+                f"Ошибка: {error_text[:1200]}\n\n"
                 "Проверь Render Logs."
             )
-            return
-        # ----------------------------------------------------
-        # RESULT
-        # ----------------------------------------------------
-        response = (
-            "🧠 MARKETLENS v0.9\n\n"
-            "👁️ Qwen Vision:\n\n"
-            f"{result}"
-        )
-        # Telegram message limit
-        MAX_LENGTH = 4000
-        if len(response) <= MAX_LENGTH:
-            await status_message.edit_text(
-                response
-            )
-        else:
-            await status_message.edit_text(
-                response[:MAX_LENGTH]
-            )
-            remaining = response[
-                MAX_LENGTH:
-            ]
-            while remaining:
-                chunk = remaining[
-                    :MAX_LENGTH
-                ]
-                await message.reply_text(
-                    chunk
-                )
-                remaining = remaining[
-                    MAX_LENGTH:
-                ]
-        print(
-            "[VISION] Result sent to Telegram"
-        )
     except Exception as e:
         logger.exception(
-            "[SCREENSHOT ERROR]"
+            "[PHOTO ERROR]"
         )
         try:
             await message.reply_text(
-                "❌ Ошибка обработки изображения.\n\n"
+                "❌ Ошибка обработки "
+                "скриншота.\n\n"
                 f"{type(e).__name__}: {e}"
             )
         except Exception:
@@ -358,109 +584,62 @@ async def handle_photo(
 # ============================================================
 async def handle_text(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    context: ContextTypes.DEFAULT_TYPE
 ):
     if not update.message:
         return
     text = (
-        update.message.text or ""
+        update.message.text
+        or ""
     )
     if text.startswith("/"):
         return
     await update.message.reply_text(
-        "📸 Отправь скриншот TradingView.\n\n"
-        "MarketLens автоматически передаст его "
-        "в Vision Engine."
+        "📸 Отправь скриншот "
+        "TradingView.\n\n"
+        "MarketLens v0.9 автоматически "
+        "отправит его в Vision Engine."
     )
 # ============================================================
 # ERROR HANDLER
 # ============================================================
 async def error_handler(
     update: object,
-    context: ContextTypes.DEFAULT_TYPE,
+    context: ContextTypes.DEFAULT_TYPE
 ):
     error = context.error
-    logger.error(
-        "Telegram error: %s",
-        error,
-    )
-    # Conflict is usually caused by
-    # another bot instance using getUpdates.
-    if (
-        error and
-        "Conflict" in str(error)
-    ):
-        logger.warning(
-            "Telegram polling conflict: "
-            "another bot instance may be running."
+    if error:
+        logger.error(
+            "Telegram error: %s",
+            error
         )
+        # 409 Conflict is usually caused
+        # by another bot process polling
+        # the same Telegram bot token.
+        if "Conflict" in str(error):
+            logger.warning(
+                "Telegram polling conflict: "
+                "another bot instance may be running."
+            )
 # ============================================================
 # MAIN
 # ============================================================
 def main():
     print(
-        "🧠 MarketLens Vision v0.9 starting..."
+        f"🧠 MarketLens Vision v{VERSION} starting..."
     )
     # --------------------------------------------------------
-    # HEALTH SERVER
+    # Render health server
     # --------------------------------------------------------
-    Thread(
+    threading.Thread(
         target=start_http_server,
-        daemon=True,
+        daemon=True
     ).start()
     # --------------------------------------------------------
-    # TELEGRAM
-    # --------------------------------------------------------
-    application = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .build()
-    )
-    # --------------------------------------------------------
-    # COMMANDS
-    # --------------------------------------------------------
-    application.add_handler(
-        CommandHandler(
-            "start",
-            start,
-        )
-    )
-    application.add_handler(
-        CommandHandler(
-            "help",
-            help_command,
-        )
-    )
-    # --------------------------------------------------------
-    # PHOTO
-    # --------------------------------------------------------
-    application.add_handler(
-        MessageHandler(
-            filters.PHOTO,
-            handle_photo,
-        )
-    )
-    # --------------------------------------------------------
-    # TEXT
-    # --------------------------------------------------------
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT &
-            ~filters.COMMAND,
-            handle_text,
-        )
-    )
-    # --------------------------------------------------------
-    # ERRORS
-    # --------------------------------------------------------
-    application.add_error_handler(
-        error_handler
-    )
-    # --------------------------------------------------------
-    # STATUS
+    # Startup information
     # --------------------------------------------------------
     print(
-        "🧠 MarketLens Vision v0.9 started"
+        f"🧠 MarketLens Vision v{VERSION} started"
     )
     print(
         "📸 Screenshot Engine: READY"
@@ -472,16 +651,68 @@ def main():
         "👁️ Vision Engine: READY"
     )
     print(
-        f"🤖 Qwen Space: {VISION_SPACE}"
+        f"🤖 Qwen Space: {QWEN_SPACE}"
     )
     print(
-        f"🔌 Endpoint: {VISION_API_NAME}"
+        f"🔗 Qwen API: {QWEN_API_URL}"
     )
     # --------------------------------------------------------
-    # POLLING
+    # Telegram
     # --------------------------------------------------------
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .build()
+    )
+    # --------------------------------------------------------
+    # Commands
+    # --------------------------------------------------------
+    application.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
+    application.add_handler(
+        CommandHandler(
+            "help",
+            help_command
+        )
+    )
+    # --------------------------------------------------------
+    # Photos
+    # --------------------------------------------------------
+    application.add_handler(
+        MessageHandler(
+            filters.PHOTO,
+            handle_photo
+        )
+    )
+    # --------------------------------------------------------
+    # Text
+    # --------------------------------------------------------
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT
+            & ~filters.COMMAND,
+            handle_text
+        )
+    )
+    # --------------------------------------------------------
+    # Errors
+    # --------------------------------------------------------
+    application.add_error_handler(
+        error_handler
+    )
+    # --------------------------------------------------------
+    # Start polling
+    # --------------------------------------------------------
+    print(
+        "🤖 Telegram polling starting..."
+    )
     application.run_polling(
-        drop_pending_updates=True
+        drop_pending_updates=True,
+        allowed_updates=Update.ALL_TYPES
     )
 # ============================================================
 # ENTRY POINT
