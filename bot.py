@@ -1,9 +1,11 @@
 import os
 import threading
+import base64
+import requests
+
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime
 
-from openai import OpenAI
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -13,12 +15,21 @@ from telegram.ext import (
     filters,
 )
 
-TOKEN = os.getenv("BOT_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+# ==================================================
+# SETTINGS
+# ==================================================
+
+TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", "10000"))
 
+VISION_URL = (
+    "https://developer0hye-qwen2-5-vl-7b-instruct.hf.space"
+    "/run/qwen_vl_inference"
+)
+
 SCREENSHOT_DIR = "screenshots"
+
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
 
@@ -30,138 +41,212 @@ class HealthHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.send_response(200)
-        self.send_header("Content-Type", "text/plain")
+        self.send_header(
+            "Content-Type",
+            "text/plain"
+        )
         self.end_headers()
-        self.wfile.write(b"MarketLens Vision is running")
+
+        self.wfile.write(
+            b"MarketLens Vision v0.4 is running"
+        )
 
     def log_message(self, format, *args):
         pass
 
 
 def start_web_server():
+
     server = HTTPServer(
         ("0.0.0.0", PORT),
         HealthHandler
     )
+
     server.serve_forever()
 
 
 # ==================================================
-# TELEGRAM COMMANDS
+# START
 # ==================================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     await update.message.reply_text(
-        "🧠 MARKETLENS v0.3\n\n"
-        "Vision Engine готов.\n\n"
+        "🧠 MARKETLENS v0.4\n\n"
+        "Vision Engine подключён.\n\n"
         "📸 Отправь скриншот TradingView.\n\n"
-        "Я попробую определить:\n"
-        "• направление\n"
-        "• структуру рынка\n"
-        "• поддержку/сопротивление\n"
-        "• свечные сигналы\n"
+        "Я проанализирую:\n"
+        "• тренд\n"
+        "• структуру\n"
+        "• поддержку\n"
+        "• сопротивление\n"
+        "• свечи\n"
         "• объём\n"
         "• основной сценарий"
     )
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    await update.message.reply_text(
-        "📚 MARKETLENS\n\n"
-        "/start — запуск\n"
-        "/help — помощь\n\n"
-        "📸 Отправь скриншот графика."
-    )
-
-
 # ==================================================
-# VISION ANALYSIS
+# VISION
 # ==================================================
 
 def analyze_chart(image_path):
 
-    if not OPENAI_API_KEY:
-        raise RuntimeError(
-            "OPENAI_API_KEY не установлен"
-        )
+    with open(image_path, "rb") as f:
 
-    client = OpenAI(
-        api_key=OPENAI_API_KEY
-    )
+        image_bytes = f.read()
 
-    with open(image_path, "rb") as image_file:
-
-        import base64
-
-        image_base64 = base64.b64encode(
-            image_file.read()
-        ).decode("utf-8")
+    image_base64 = base64.b64encode(
+        image_bytes
+    ).decode("utf-8")
 
     prompt = """
-Ты — технический аналитик MarketLens.
+Ты — Technical Engine системы MarketLens.
 
-Проанализируй изображение торгового графика.
+Проанализируй предоставленный скриншот
+торгового графика.
 
-НЕ придумывай значения, которых невозможно увидеть
+Отвечай ТОЛЬКО по тому, что реально видно
 на изображении.
 
 Определи:
 
-1. Актив/валютную пару, если она видна.
-2. Таймфрейм, если он виден.
-3. Направление:
-   ВВЕРХ / ВНИЗ / БОКОВИК / НЕОПРЕДЕЛЁННО
+1. Актив / валютную пару.
+2. Таймфрейм.
+3. Текущее направление:
+   ВВЕРХ / ВНИЗ / БОКОВИК / НЕОПРЕДЕЛЁННО.
+
 4. Рыночную структуру:
-   HH, HL, LH, LL, либо боковик.
+   HH, HL, LH, LL.
+
 5. Ближайшую поддержку.
+
 6. Ближайшее сопротивление.
-7. Свечные паттерны, если они действительно видны.
-8. Объём, если индикатор объёма присутствует.
-9. Импульс или коррекцию.
-10. Основной сценарий движения.
-11. Альтернативный сценарий.
-12. Что должно произойти для подтверждения сценария.
-13. Что отменяет сценарий.
 
-Если график недостаточно качественный,
-напиши:
+7. Свечную структуру.
 
-"НЕДОСТАТОЧНО ДАННЫХ — НУЖЕН НОВЫЙ СКРИНШОТ"
+8. Есть ли разворотный паттерн.
 
-Не используй выдуманную точность.
+9. Объём, если он виден.
 
-Ответ должен быть коротким и структурированным.
+10. Импульс или коррекцию.
+
+11. Основной сценарий.
+
+12. Альтернативный сценарий.
+
+13. Условия подтверждения.
+
+14. Условия отмены сценария.
+
+ВАЖНО:
+
+Не придумывай цены, уровни или паттерны,
+которых невозможно определить по изображению.
+
+Если график плохо виден, напиши:
+
+НЕДОСТАТОЧНО ДАННЫХ — НУЖЕН НОВЫЙ СКРИНШОТ.
+
+Формат ответа:
+
+📊 MARKETLENS
+
+Актив:
+Таймфрейм:
+
+📈 Тренд:
+📊 Структура:
+
+🟢 Поддержка:
+🔴 Сопротивление:
+
+🕯 Свечи:
+📊 Объём:
+
+🎯 Основной сценарий:
+🔄 Альтернативный сценарий:
+
+✅ Подтверждение:
+❌ Отмена:
+
+📌 Итог:
+
+Не обещай прибыль и не утверждай,
+что движение цены гарантировано.
 """
 
-    response = client.responses.create(
-        model="gpt-4.1-mini",
-        input=[
+    payload = {
+        "data": [
             {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": prompt
-                    },
-                    {
-                        "type": "input_image",
-                        "image_url": (
-                            f"data:image/jpeg;base64,"
-                            f"{image_base64}"
-                        )
-                    }
-                ]
-            }
+                "path": None,
+                "url": (
+                    "data:image/jpeg;base64,"
+                    + image_base64
+                ),
+                "size": len(image_bytes),
+                "orig_name": "chart.jpg",
+                "mime_type": "image/jpeg",
+                "is_stream": False,
+                "meta": {
+                    "_type": "gradio.FileData"
+                }
+            },
+            prompt
         ]
+    }
+
+    response = requests.post(
+        VISION_URL,
+        json=payload,
+        timeout=180
     )
 
-    return response.output_text
+    response.raise_for_status()
+
+    result = response.json()
+
+    return extract_result(result)
 
 
 # ==================================================
-# IMAGE RECEIVER
+# RESULT PARSER
+# ==================================================
+
+def extract_result(result):
+
+    output = result.get("output")
+
+    if output is not None:
+
+        if isinstance(output, str):
+            return output
+
+        return str(output)
+
+    data = result.get("data")
+
+    if data:
+
+        if isinstance(data, list):
+
+            first = data[0]
+
+            if isinstance(first, str):
+                return first
+
+            return str(first)
+
+        return str(data)
+
+    return str(result)
+
+
+# ==================================================
+# RECEIVE SCREENSHOT
 # ==================================================
 
 async def receive_screenshot(
@@ -171,7 +256,7 @@ async def receive_screenshot(
 
     message = update.message
 
-    if not message:
+    if not message or not message.photo:
         return
 
     try:
@@ -181,7 +266,6 @@ async def receive_screenshot(
             "🧠 Vision Engine анализирует график..."
         )
 
-        # Берём изображение максимального качества
         photo = message.photo[-1]
 
         telegram_file = await context.bot.get_file(
@@ -211,19 +295,29 @@ async def receive_screenshot(
             f"[SCREENSHOT] Saved: {filepath}"
         )
 
-        # Vision
-        analysis = analyze_chart(filepath)
+        # Vision analysis
+        analysis = analyze_chart(
+            filepath
+        )
 
-        # Ограничиваем размер Telegram-сообщения
+        if not analysis:
+            analysis = (
+                "❌ Vision Engine не вернул результат."
+            )
+
+        # Telegram limit
         if len(analysis) > 3900:
             analysis = analysis[:3900]
 
         await message.reply_text(
-            "🧠 MARKETLENS\n\n"
-            + analysis
+            analysis
             + "\n\n"
-            "⚠️ Анализ является технической оценкой, "
-            "а не гарантией движения цены."
+            "⚠️ Это технический анализ графика, "
+            "а не гарантия движения цены."
+        )
+
+        print(
+            "[VISION] Analysis completed"
         )
 
     except Exception as error:
@@ -233,9 +327,10 @@ async def receive_screenshot(
         )
 
         await message.reply_text(
-            "❌ Не удалось выполнить Vision-анализ.\n\n"
-            f"Причина: {type(error).__name__}\n\n"
-            "Проверь настройки Vision API."
+            "❌ Vision Engine не смог обработать "
+            "график.\n\n"
+            f"Ошибка: {type(error).__name__}\n\n"
+            "Попробуй отправить скриншот ещё раз."
         )
 
 
@@ -246,8 +341,9 @@ async def receive_screenshot(
 def main():
 
     if not TOKEN:
+
         raise RuntimeError(
-            "BOT_TOKEN не установлен"
+            "BOT_TOKEN не найден в Environment Variables"
         )
 
     threading.Thread(
@@ -274,13 +370,6 @@ def main():
     )
 
     app.add_handler(
-        CommandHandler(
-            "help",
-            help_command
-        )
-    )
-
-    app.add_handler(
         MessageHandler(
             filters.PHOTO,
             receive_screenshot
@@ -288,7 +377,7 @@ def main():
     )
 
     print(
-        "🧠 MarketLens Vision Engine started"
+        "🧠 MarketLens Vision v0.4 started"
     )
 
     app.run_polling()
