@@ -1,410 +1,203 @@
 import os
 import threading
-import base64
-import json
-import time
-import requests
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
 from telegram import Update
 from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
+Application,
+CommandHandler,
+MessageHandler,
+ContextTypes,
+filters,
 )
-# =========================================================
-# SETTINGS
-# =========================================================
-TOKEN = os.getenv("BOT_TOKEN")
-PORT = int(os.getenv("PORT", "10000"))
-VISION_BASE_URL = (
-    "https://developer0hye-qwen2-5-vl-7b-instruct.hf.space"
-)
-VISION_CALL_URL = (
-    VISION_BASE_URL
-    + "/gradio_api/call/qwen_vl_inference"
-)
-SCREENSHOT_DIR = "screenshots"
+
+from gradio_client import Client, handle_file
+
+=========================
+
+CONFIG
+
+=========================
+
+BOT_TOKEN = os.environ.get(“BOT_TOKEN”)
+
+VISION_SPACE = “developer0hye/Qwen2.5-VL-7B-Instruct”
+
+PORT = int(os.environ.get(“PORT”, “10000”))
+
+SCREENSHOT_DIR = “screenshots”
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
-# =========================================================
-# RENDER HEALTH SERVER
-# =========================================================
+
+=========================
+
+HTTP SERVER FOR RENDER
+
+=========================
+
 class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header(
-            "Content-Type",
-            "text/plain"
-        )
-        self.end_headers()
-        self.wfile.write(
-            b"MarketLens Vision v0.5 is running"
-        )
-    def log_message(self, format, *args):
-        pass
-def start_web_server():
-    server = HTTPServer(
-        ("0.0.0.0", PORT),
-        HealthHandler
+
+def do_GET(self):
+    self.send_response(200)
+    self.send_header("Content-Type", "text/plain; charset=utf-8")
+    self.end_headers()
+    self.wfile.write(b"MarketLens is alive")
+def log_message(self, format, *args):
+    return
+
+def start_http_server():
+server = HTTPServer((“0.0.0.0”, PORT), HealthHandler)
+print(f”HTTP server started on port {PORT}”, flush=True)
+server.serve_forever()
+
+=========================
+
+VISION ENGINE
+
+=========================
+
+def analyze_chart(image_path: str) -> str:
+
+print("[VISION] Connecting to Qwen Space...", flush=True)
+client = Client(VISION_SPACE)
+prompt = """
+
+Analyze this TradingView trading chart.
+
+Give a concise technical analysis.
+
+Identify:
+
+1. Market trend
+2. Current market structure
+3. Nearest support
+4. Nearest resistance
+5. Important candlestick behavior
+6. Volume behavior if visible
+7. Most likely direction: UP, DOWN, or RANGE
+8. Confidence from 0 to 100%
+9. What would invalidate the scenario
+
+Do not invent information that is not visible on the chart.
+
+Answer in Russian.
+“””
+
+print("[VISION] Sending chart...", flush=True)
+result = client.predict(
+    image_path=handle_file(image_path),
+    text_input=prompt,
+    api_name="/qwen_vl_inference"
+)
+print("[VISION] Response received", flush=True)
+if result is None:
+    raise RuntimeError("Qwen returned an empty response")
+return str(result)
+
+=========================
+
+TELEGRAM
+
+=========================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+await update.message.reply_text(
+    "🧠 MARKETLENS v0.6\n\n"
+    "Я готов анализировать TradingView.\n\n"
+    "📸 Отправь скриншот графика."
+)
+
+async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+message = update.message
+if not message or not message.photo:
+    return
+try:
+    await message.reply_text(
+        "📸 СКРИНШОТ ПОЛУЧЕН\n\n"
+        "💾 Сохраняю изображение...\n"
+        "🧠 Подготавливаю Vision-анализ..."
     )
-    server.serve_forever()
-# =========================================================
-# TELEGRAM START
-# =========================================================
-async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-    await update.message.reply_text(
-        "🧠 MARKETLENS v0.5\n\n"
-        "Vision Engine подключён.\n\n"
-        "📸 Отправь скриншот TradingView."
+    photo = message.photo[-1]
+    file = await photo.get_file()
+    user_id = update.effective_user.id if update.effective_user else 0
+    timestamp = datetime.now(timezone.utc).strftime(
+        "%Y%m%d_%H%M%S_%f"
     )
-# =========================================================
-# VISION ANALYSIS
-# =========================================================
-def analyze_chart(image_path):
-    print("[VISION] Preparing image...")
-    with open(image_path, "rb") as file:
-        image_bytes = file.read()
-    image_base64 = base64.b64encode(
-        image_bytes
-    ).decode("utf-8")
-    image_url = (
-        "data:image/jpeg;base64,"
-        + image_base64
+    filename = f"chart_{user_id}_{timestamp}.jpg"
+    image_path = os.path.join(
+        SCREENSHOT_DIR,
+        filename
     )
-    prompt = """
-Ты — Technical Engine системы MarketLens.
-Проанализируй предоставленный скриншот
-TradingView.
-Работай ТОЛЬКО с информацией, которую
-можно реально увидеть на изображении.
-Определи:
-1. Актив / валютную пару.
-2. Таймфрейм.
-3. Текущее направление:
-ВВЕРХ / ВНИЗ / БОКОВИК / НЕОПРЕДЕЛЁННО.
-4. Рыночную структуру:
-HH / HL / LH / LL.
-5. Ближайшую поддержку.
-6. Ближайшее сопротивление.
-7. Свечную структуру.
-8. Разворотные свечные паттерны,
-если они действительно видны.
-9. Объём, если он присутствует.
-10. Импульс или коррекцию.
-11. Основной сценарий.
-12. Альтернативный сценарий.
-13. Условия подтверждения.
-14. Условия отмены.
-НЕ ПРИДУМЫВАЙ цены, уровни,
-паттерны или объём.
-Если график плохо виден,
-напиши:
-НЕДОСТАТОЧНО ДАННЫХ — НУЖЕН НОВЫЙ СКРИНШОТ.
-Отвечай в формате:
-📊 MARKETLENS
-Актив:
-Таймфрейм:
-📈 Тренд:
-📊 Структура:
-🟢 Поддержка:
-🔴 Сопротивление:
-🕯 Свечи:
-📊 Объём:
-🎯 Основной сценарий:
-🔄 Альтернативный сценарий:
-✅ Подтверждение:
-❌ Отмена:
-📌 Итог:
-Не обещай прибыль и не утверждай,
-что движение цены гарантировано.
-"""
-    payload = {
-        "data": [
-            {
-                "path": None,
-                "url": image_url,
-                "size": len(image_bytes),
-                "orig_name": "chart.jpg",
-                "mime_type": "image/jpeg",
-                "is_stream": False,
-                "meta": {
-                    "_type": "gradio.FileData"
-                }
-            },
-            prompt
-        ]
-    }
-    print("[VISION] Sending request...")
-    response = requests.post(
-        VISION_CALL_URL,
-        json=payload,
-        timeout=60
-    )
+    await file.download_to_drive(image_path)
+    size = os.path.getsize(image_path)
     print(
-        f"[VISION] HTTP status: "
-        f"{response.status_code}"
+        f"[SCREENSHOT] Saved: {image_path} "
+        f"({size / 1024:.1f} KB)",
+        flush=True
     )
-    if response.status_code != 200:
-        print(
-            "[VISION ERROR] Response:"
-        )
-        print(
-            response.text[:3000]
-        )
-        raise RuntimeError(
-            "Vision API returned HTTP "
-            + str(response.status_code)
-        )
-    result = response.json()
-    print("[VISION] Job created")
-    event_id = result.get("event_id")
-    if not event_id:
-        raise RuntimeError(
-            "Vision API did not return event_id"
-        )
+    await message.reply_text(
+        "💾 Изображение сохранено.\n\n"
+        "🧠 Vision Engine анализирует график..."
+    )
+    result = analyze_chart(image_path)
+    await message.reply_text(
+        "🧠 MARKETLENS ANALYSIS\n\n"
+        + result
+    )
+except Exception as e:
     print(
-        f"[VISION] Event ID: {event_id}"
+        f"[ERROR] {type(e).__name__}: {e}",
+        flush=True
     )
-    # =====================================================
-    # WAIT FOR RESULT
-    # =====================================================
-    events_url = (
-        VISION_BASE_URL
-        + "/gradio_api/call/"
-        + "qwen_vl_inference/"
-        + event_id
+    await message.reply_text(
+        "❌ Vision Engine не смог обработать график.\n\n"
+        f"Ошибка: {type(e).__name__}\n\n"
+        "Проверь Render Logs."
     )
-    print(
-        "[VISION] Waiting for result..."
-    )
-    with requests.get(
-        events_url,
-        stream=True,
-        timeout=180,
-        headers={
-            "Accept": "text/event-stream"
-        }
-    ) as stream:
-        if stream.status_code != 200:
-            print(
-                "[VISION ERROR] Event HTTP:"
-            )
-            print(
-                stream.text[:3000]
-            )
-            raise RuntimeError(
-                "Vision event stream HTTP "
-                + str(stream.status_code)
-            )
-        current_event = None
-        for raw_line in stream.iter_lines(
-            decode_unicode=True
-        ):
-            if not raw_line:
-                continue
-            line = raw_line.strip()
-            print(
-                f"[VISION STREAM] {line[:500]}"
-            )
-            if line.startswith("event:"):
-                current_event = (
-                    line.split(
-                        "event:",
-                        1
-                    )[1].strip()
-                )
-                continue
-            if line.startswith("data:"):
-                data_text = (
-                    line.split(
-                        "data:",
-                        1
-                    )[1].strip()
-                )
-                if current_event == "complete":
-                    try:
-                        data = json.loads(
-                            data_text
-                        )
-                    except Exception:
-                        data = data_text
-                    print(
-                        "[VISION] Complete"
-                    )
-                    return extract_result(
-                        data
-                    )
-                if current_event == "error":
-                    raise RuntimeError(
-                        "Vision returned error: "
-                        + data_text[:1000]
-                    )
-    raise RuntimeError(
-        "Vision did not return a result"
-    )
-# =========================================================
-# RESULT PARSER
-# =========================================================
-def extract_result(result):
-    print(
-        "[VISION] Parsing result..."
-    )
-    if isinstance(result, str):
-        return result
-    if isinstance(result, list):
-        if len(result) == 0:
-            return "Vision вернул пустой результат."
-        first = result[0]
-        if isinstance(first, str):
-            return first
-        if isinstance(first, dict):
-            for key in (
-                "text",
-                "value",
-                "output"
-            ):
-                if key in first:
-                    return str(
-                        first[key]
-                    )
-        return str(first)
-    if isinstance(result, dict):
-        for key in (
-            "output",
-            "text",
-            "value"
-        ):
-            if key in result:
-                value = result[key]
-                if isinstance(
-                    value,
-                    str
-                ):
-                    return value
-                return str(value)
-    return str(result)
-# =========================================================
-# RECEIVE SCREENSHOT
-# =========================================================
-async def receive_screenshot(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-    message = update.message
-    if not message:
-        return
-    if not message.photo:
-        return
-    try:
-        await message.reply_text(
-            "📸 СКРИНШОТ ПОЛУЧЕН\n\n"
-            "💾 Сохраняю изображение...\n"
-            "🧠 Запускаю Vision Engine..."
-        )
-        photo = message.photo[-1]
-        telegram_file = (
-            await context.bot.get_file(
-                photo.file_id
-            )
-        )
-        timestamp = datetime.now(
-            timezone.utc
-        ).strftime(
-            "%Y%m%d_%H%M%S_%f"
-        )
-        user_id = message.from_user.id
-        filename = (
-            f"chart_{user_id}_"
-            f"{timestamp}.jpg"
-        )
-        filepath = os.path.join(
-            SCREENSHOT_DIR,
-            filename
-        )
-        await telegram_file.download_to_drive(
-            custom_path=filepath
-        )
-        print(
-            f"[SCREENSHOT] Saved: "
-            f"{filepath}"
-        )
-        analysis = analyze_chart(
-            filepath
-        )
-        if not analysis:
-            analysis = (
-                "❌ Vision Engine "
-                "вернул пустой ответ."
-            )
-        if len(analysis) > 3900:
-            analysis = analysis[:3900]
-        await message.reply_text(
-            analysis
-            + "\n\n"
-            "⚠️ Технический анализ "
-            "не является гарантией "
-            "движения цены."
-        )
-        print(
-            "[MARKETLENS] Analysis sent "
-            "to Telegram"
-        )
-    except Exception as error:
-        print(
-            "[ERROR] "
-            f"{type(error).__name__}: "
-            f"{error}"
-        )
-        await message.reply_text(
-            "❌ Vision Engine не смог "
-            "обработать график.\n\n"
-            f"Ошибка: "
-            f"{type(error).__name__}\n\n"
-            "Проверь Render Logs."
-        )
-# =========================================================
-# MAIN
-# =========================================================
+
+=========================
+
+MAIN
+
+=========================
+
 def main():
-    if not TOKEN:
-        raise RuntimeError(
-            "BOT_TOKEN не найден "
-            "в Environment Variables"
-        )
-    threading.Thread(
-        target=start_web_server,
-        daemon=True
-    ).start()
-    print(
-        f"HTTP server started "
-        f"on port {PORT}"
+
+if not BOT_TOKEN:
+    raise RuntimeError(
+        "BOT_TOKEN environment variable is missing"
     )
-    app = (
-        Application
-        .builder()
-        .token(TOKEN)
-        .build()
+threading.Thread(
+    target=start_http_server,
+    daemon=True
+).start()
+print(
+    "🧠 MarketLens Vision v0.6 started",
+    flush=True
+)
+application = (
+    Application.builder()
+    .token(BOT_TOKEN)
+    .build()
+)
+application.add_handler(
+    CommandHandler("start", start)
+)
+application.add_handler(
+    MessageHandler(
+        filters.PHOTO,
+        photo_handler
     )
-    app.add_handler(
-        CommandHandler(
-            "start",
-            start
-        )
-    )
-    app.add_handler(
-        MessageHandler(
-            filters.PHOTO,
-            receive_screenshot
-        )
-    )
-    print(
-        "🧠 MarketLens Vision v0.5 started"
-    )
-    app.run_polling()
-if __name__ == "__main__":
-    main()
+)
+print(
+    "🤖 Telegram polling started",
+    flush=True
+)
+application.run_polling(
+    drop_pending_updates=True
+)
+
+if name == “main”:
+main()
