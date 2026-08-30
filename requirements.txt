@@ -1,4 +1,2 @@
-python-telegram-bot==22.8
-gradio_client
+python-telegram-bot
 requests
-Pillow
