@@ -1,3 +1,1 @@
-python-telegram-bot
-gradio-client
-requests
+gradio_client
