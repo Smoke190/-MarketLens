@@ -1,183 +1,205 @@
 import os
-import threading
+import asyncio
+import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
-
+from threading import Thread
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
-
-from gradio_client import Client, handle_file
-
-BOT_TOKEN = os.environ.get(“BOT_TOKEN”)
-VISION_SPACE = “developer0hye/Qwen2.5-VL-7B-Instruct”
-
-PORT = int(os.environ.get(“PORT”, “10000”))
-
-SCREENSHOT_DIR = “screenshots”
-os.makedirs(SCREENSHOT_DIR, exist_ok=True)
-
-class HealthHandler(BaseHTTPRequestHandler):
-
-def do_GET(self):
-    self.send_response(200)
-    self.send_header("Content-Type", "text/plain")
-    self.end_headers()
-    self.wfile.write(b"MarketLens is alive")
-def log_message(self, format, *args):
-    pass
-
-def start_http_server():
-server = HTTPServer((“0.0.0.0”, PORT), HealthHandler)
-print(“HTTP server started on port “ + str(PORT), flush=True)
-server.serve_forever()
-
-def analyze_chart(image_path):
-
-print("[VISION] Connecting to Qwen...", flush=True)
-client = Client(VISION_SPACE)
-prompt = """
-
-Ты технический аналитик.
-
-Проанализируй изображение графика TradingView.
-
-Определи:
-
-1. Таймфрейм, если он виден.
-2. Основной тренд.
-3. Рыночную структуру.
-4. Ближайшую поддержку.
-5. Ближайшее сопротивление.
-6. Поведение последних свечей.
-7. Объём, если он виден.
-8. Возможное направление движения: UP, DOWN или RANGE.
-9. Уверенность от 0 до 100%.
-10. Уровень, пробой которого отменит сценарий.
-
-Не придумывай данные, которых нет на изображении.
-
-Ответ дай на русском языке.
-Будь кратким и конкретным.
-“””
-
-print("[VISION] Sending image...", flush=True)
-result = client.predict(
-    image_path=handle_file(image_path),
-    text_input=prompt,
-    api_name="/qwen_vl_inference"
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
 )
-print("[VISION] Result received", flush=True)
-if result is None:
-    raise RuntimeError("Qwen returned empty result")
-return str(result)
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-await update.message.reply_text(
-    "🧠 MARKETLENS v0.6\n\n"
-    "Готов анализировать TradingView.\n\n"
-    "📸 Отправь скриншот графика."
-)
-
-async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-try:
-    message = update.message
-    if message is None or not message.photo:
-        return
-    await message.reply_text(
-        "📸 СКРИНШОТ ПОЛУЧЕН\n\n"
-        "💾 Сохраняю изображение..."
-    )
-    photo = message.photo[-1]
-    telegram_file = await photo.get_file()
-    user_id = 0
-    if update.effective_user:
-        user_id = update.effective_user.id
-    timestamp = datetime.now(timezone.utc).strftime(
-        "%Y%m%d_%H%M%S_%f"
-    )
-    filename = (
-        "chart_"
-        + str(user_id)
-        + "_"
-        + timestamp
-        + ".jpg"
-    )
-    image_path = os.path.join(
-        SCREENSHOT_DIR,
-        filename
-    )
-    await telegram_file.download_to_drive(image_path)
-    size = os.path.getsize(image_path)
-    print(
-        "[SCREENSHOT] Saved: "
-        + image_path
-        + " ("
-        + str(round(size / 1024, 1))
-        + " KB)",
-        flush=True
-    )
-    await message.reply_text(
-        "💾 Изображение сохранено.\n\n"
-        "🧠 Qwen Vision анализирует график..."
-    )
-    result = analyze_chart(image_path)
-    await message.reply_text(
-        "🧠 MARKETLENS ANALYSIS\n\n"
-        + result
-    )
-except Exception as error:
-    print(
-        "[VISION ERROR] "
-        + type(error).__name__
-        + ": "
-        + str(error),
-        flush=True
-    )
-    await update.message.reply_text(
-        "❌ Vision Engine не смог обработать график.\n\n"
-        "Ошибка: "
-        + type(error).__name__
-        + "\n\n"
-        + str(error)
-    )
-
-def main():
-
+# ============================================================
+# MARKETLENS v0.6
+# Stable Telegram bot + screenshot storage
+# ============================================================
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
-    raise RuntimeError(
-        "BOT_TOKEN is not configured in Render Environment Variables"
+    raise RuntimeError("BOT_TOKEN is not set in Render Environment Variables")
+# Folder for screenshots
+SCREENSHOTS_DIR = Path("screenshots")
+SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger("MarketLens")
+# ============================================================
+# SIMPLE HTTP SERVER FOR RENDER
+# ============================================================
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"MarketLens v0.6 is running")
+    def log_message(self, format, *args):
+        return
+def start_http_server():
+    port = int(os.environ.get("PORT", "10000"))
+    server = HTTPServer(
+        ("0.0.0.0", port),
+        HealthHandler,
     )
-threading.Thread(
-    target=start_http_server,
-    daemon=True
-).start()
-print(
-    "🧠 MarketLens Vision v0.6 started",
-    flush=True
-)
-application = (
-    Application.builder()
-    .token(BOT_TOKEN)
-    .build()
-)
-application.add_handler(
-    CommandHandler("start", start)
-)
-application.add_handler(
-    MessageHandler(
-        filters.PHOTO,
-        photo_handler
+    print(f"HTTP server started on port {port}")
+    server.serve_forever()
+# ============================================================
+# TELEGRAM COMMANDS
+# ============================================================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "🧠 MARKETLENS v0.6\n\n"
+        "Я готов принимать графики.\n\n"
+        "📸 Отправь мне скриншот TradingView.\n\n"
+        "💾 Я сохраню изображение.\n"
+        "🧠 Следующий этап — подключение Vision Engine."
     )
-)
-print(
-    "🤖 Telegram polling started",
-    flush=True
-)
-application.run_polling(
-    drop_pending_updates=True
-)
-
-if name == “main”:
-main()
+    await update.message.reply_text(text)
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "🧠 MARKETLENS v0.6\n\n"
+        "Доступные команды:\n\n"
+        "/start — запустить бота\n"
+        "/help — помощь\n\n"
+        "📸 Просто отправь скриншот TradingView."
+    )
+    await update.message.reply_text(text)
+# ============================================================
+# SCREENSHOT HANDLER
+# ============================================================
+async def handle_photo(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    try:
+        message = update.message
+        if not message or not message.photo:
+            return
+        # Get highest quality Telegram photo
+        photo = message.photo[-1]
+        file = await context.bot.get_file(photo.file_id)
+        now = datetime.now(timezone.utc)
+        timestamp = now.strftime("%Y%m%d_%H%M%S_%f")
+        filename = (
+            f"chart_"
+            f"{message.from_user.id}_"
+            f"{timestamp}.jpg"
+        )
+        filepath = SCREENSHOTS_DIR / filename
+        await file.download_to_drive(
+            custom_path=str(filepath)
+        )
+        size_kb = filepath.stat().st_size / 1024
+        print(
+            f"[SCREENSHOT] Saved: {filepath}"
+        )
+        print(
+            f"[SCREENSHOT] Size: {size_kb:.1f} KB"
+        )
+        # ----------------------------------------------------
+        # USER RESPONSE
+        # ----------------------------------------------------
+        await message.reply_text(
+            "📸 СКРИНШОТ ПОЛУЧЕН\n\n"
+            f"💾 Файл: {filename}\n"
+            f"📦 Размер: {size_kb:.1f} KB\n\n"
+            "✅ Изображение сохранено.\n\n"
+            "🧠 MarketLens Vision v0.6\n"
+            "График подготовлен для анализа."
+        )
+    except Exception as e:
+        logger.exception(
+            "[SCREENSHOT ERROR]"
+        )
+        await update.message.reply_text(
+            "❌ Не удалось сохранить скриншот.\n\n"
+            f"Ошибка: {type(e).__name__}"
+        )
+# ============================================================
+# TEXT HANDLER
+# ============================================================
+async def handle_text(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    if not update.message:
+        return
+    text = update.message.text or ""
+    if text.startswith("/"):
+        return
+    await update.message.reply_text(
+        "📸 Отправь мне именно скриншот графика TradingView.\n\n"
+        "После получения изображения я сохраню его "
+        "и подготовлю к техническому анализу."
+    )
+# ============================================================
+# ERROR HANDLER
+# ============================================================
+async def error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    logger.error(
+        "Telegram error: %s",
+        context.error,
+    )
+# ============================================================
+# MAIN
+# ============================================================
+def main():
+    print("🧠 MarketLens Vision v0.6 starting...")
+    # Start Render health server
+    Thread(
+        target=start_http_server,
+        daemon=True,
+    ).start()
+    # Create Telegram application
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .build()
+    )
+    # Commands
+    application.add_handler(
+        CommandHandler(
+            "start",
+            start,
+        )
+    )
+    application.add_handler(
+        CommandHandler(
+            "help",
+            help_command,
+        )
+    )
+    # Photos
+    application.add_handler(
+        MessageHandler(
+            filters.PHOTO,
+            handle_photo,
+        )
+    )
+    # Text
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_text,
+        )
+    )
+    application.add_error_handler(
+        error_handler
+    )
+    print("🧠 MarketLens Vision v0.6 started")
+    print("📸 Screenshot engine: READY")
+    print("💾 Screenshot storage: READY")
+    print("👁️ Vision Engine: STANDBY")
+    # Start polling
+    application.run_polling(
+        drop_pending_updates=True
+    )
+if __name__ == "__main__":
+    main()
