@@ -14,44 +14,30 @@ from telegram.ext import (
     filters,
 )
 # ============================================================
-# MARKETLENS v0.9
-# Telegram + Screenshot Storage + Qwen Vision
-#
-# Qwen connection:
-#   Hugging Face Space:
-#   developer0hye/Qwen2.5-VL-7B-Instruct
-#
-# Endpoint:
-#   /qwen_vl_inference
-#
-# Inputs:
-#   image_path
-#   text_input
+# MARKETLENS v0.9.1
+# Telegram Bot + Screenshot Storage + Qwen Vision
 # ============================================================
-VERSION = "0.9"
+VERSION = "0.9.1"
+# ============================================================
+# ENVIRONMENT
+# ============================================================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError(
         "BOT_TOKEN is not set in Render Environment Variables"
     )
 # ============================================================
-# QWEN CONFIGURATION
+# QWEN SPACE
 # ============================================================
-QWEN_SPACE = os.environ.get(
-    "QWEN_SPACE",
-    "developer0hye/Qwen2.5-VL-7B-Instruct",
-)
-QWEN_API_NAME = os.environ.get(
-    "QWEN_API_NAME",
-    "/qwen_vl_inference",
-)
+QWEN_SPACE = "developer0hye/Qwen2.5-VL-7B-Instruct"
+QWEN_API_NAME = "/qwen_vl_inference"
 # ============================================================
 # DIRECTORIES
 # ============================================================
 SCREENSHOTS_DIR = Path("screenshots")
 SCREENSHOTS_DIR.mkdir(
     parents=True,
-    exist_ok=True,
+    exist_ok=True
 )
 # ============================================================
 # LOGGING
@@ -62,32 +48,32 @@ logging.basicConfig(
 )
 logger = logging.getLogger("MarketLens")
 # ============================================================
-# OPTIONAL GRADIO CLIENT
+# GRADIO CLIENT
 # ============================================================
 try:
     from gradio_client import Client, handle_file
     GRADIO_AVAILABLE = True
 except Exception as e:
+    GRADIO_AVAILABLE = False
     Client = None
     handle_file = None
-    GRADIO_AVAILABLE = False
-    logger.warning(
-        "gradio_client is not available: %s",
-        e,
+    logger.error(
+        "gradio_client import failed: %s",
+        e
     )
 # ============================================================
-# SIMPLE HTTP SERVER FOR RENDER
+# RENDER HEALTH SERVER
 # ============================================================
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header(
             "Content-Type",
-            "text/plain; charset=utf-8",
+            "text/plain; charset=utf-8"
         )
         self.end_headers()
         self.wfile.write(
-            f"MarketLens v{VERSION} is running".encode(
+            f"MarketLens v{VERSION} OK".encode(
                 "utf-8"
             )
         )
@@ -97,64 +83,94 @@ def start_http_server():
     port = int(
         os.environ.get(
             "PORT",
-            "10000",
+            "10000"
         )
     )
     server = HTTPServer(
         (
             "0.0.0.0",
-            port,
+            port
         ),
-        HealthHandler,
+        HealthHandler
     )
     print(
         f"HTTP server started on port {port}"
     )
     server.serve_forever()
 # ============================================================
-# QWEN VISION
+# VISION PROMPT
 # ============================================================
 VISION_PROMPT = """
-Ты — MarketLens Vision Engine, технический аналитик графиков.
-Проанализируй изображение торгового графика.
-Определи:
-1. Направление тренда:
-   - UP
-   - DOWN
-   - SIDEWAYS
-2. Структуру рынка:
-   - HH
-   - HL
-   - LH
-   - LL
-   - range
-   - breakout
-   - pullback
-3. Ближайшие уровни:
-   - Support
-   - Resistance
-4. Поведение свечей.
-5. Если на графике виден объём — оцени его относительно движения цены.
-6. Определи наиболее вероятный сценарий:
-   - продолжение движения
-   - откат
-   - пробой
-   - ложный пробой
-   - боковик
-7. Дай итоговый сигнал:
-DIRECTION: UP / DOWN / NEUTRAL
-CONFIDENCE: 0-100%
-ENTRY: BUY / SELL / WAIT
-IMPORTANT:
-Не выдумывай уровни, которых невозможно увидеть на графике.
-Если изображения недостаточно для анализа — напиши NEED_NEW_SCREENSHOT.
-Ответ должен быть коротким, структурированным и без лишней воды.
+Ты — MarketLens Vision Engine.
+Твоя задача — профессионально анализировать изображение
+торгового графика.
+Не выдумывай данные, которых нет на изображении.
+Проанализируй:
+1. TREND
+UP / DOWN / SIDEWAYS
+2. MARKET STRUCTURE
+HH / HL / LH / LL / RANGE / BREAKOUT / PULLBACK
+3. SUPPORT
+Ближайшая видимая зона поддержки.
+4. RESISTANCE
+Ближайшая видимая зона сопротивления.
+5. CANDLE ACTION
+Что происходит с последними свечами.
+6. VOLUME
+Если объём присутствует на графике —
+оценивает ли он движение цены.
+7. SCENARIO
+Выбери наиболее вероятный:
+CONTINUATION
+PULLBACK
+BREAKOUT
+FALSE BREAKOUT
+RANGE
+8. SIGNAL
+BUY
+SELL
+WAIT
+9. CONFIDENCE
+0-100%
+10. ENTRY
+Если возможно, укажи логичную область входа.
+11. INVALIDATION
+Что должно произойти, чтобы сценарий считался отменённым.
+ВАЖНО:
+Если изображение недостаточно хорошо видно,
+если не видно цены, свечей или структуры рынка,
+напиши:
+NEED_NEW_SCREENSHOT
+Ответ:
+📊 MARKETLENS ANALYSIS
+TREND:
+...
+STRUCTURE:
+...
+SUPPORT:
+...
+RESISTANCE:
+...
+CANDLE ACTION:
+...
+VOLUME:
+...
+SCENARIO:
+...
+SIGNAL:
+...
+CONFIDENCE:
+...
+ENTRY:
+...
+INVALIDATION:
+...
+Не используй лишнюю воду.
 """
-def clean_qwen_result(result):
-    """
-    Приводит различные варианты ответа Gradio
-    к обычной строке.
-    """
+# ============================================================
+# CLEAN RESULT
+# ============================================================
+def clean_result(result):
     if result is None:
         return ""
     if isinstance(result, str):
@@ -165,42 +181,36 @@ def clean_qwen_result(result):
             if item is None:
                 continue
             if isinstance(item, str):
-                parts.append(item)
+                parts.append(
+                    item
+                )
             else:
                 parts.append(
                     str(item)
                 )
-        return "\n".join(parts).strip()
+        return "\n".join(
+            parts
+        ).strip()
     if isinstance(result, dict):
-        # Возможные ключи ответа
         for key in (
             "text",
             "output",
             "result",
-            "value",
+            "value"
         ):
-            value = result.get(key)
-            if value is not None:
-                if isinstance(
-                    value,
-                    str,
-                ):
-                    return value.strip()
+            if key in result:
+                value = result[key]
+                if value is None:
+                    continue
                 return str(value).strip()
         return str(result).strip()
     return str(result).strip()
+# ============================================================
+# QWEN ANALYSIS
+# ============================================================
 def qwen_analyze_image(
-    image_path: str,
+    image_path: str
 ) -> str:
-    if not GRADIO_AVAILABLE:
-        raise RuntimeError(
-            "gradio_client is not installed. "
-            "Add gradio-client to requirements.txt"
-        )
-    if not Path(image_path).exists():
-        raise RuntimeError(
-            f"Image does not exist: {image_path}"
-        )
     print(
         "[VISION] Connecting to Qwen Space..."
     )
@@ -208,8 +218,20 @@ def qwen_analyze_image(
         f"[VISION] Space: {QWEN_SPACE}"
     )
     print(
-        f"[VISION] API: {QWEN_API_NAME}"
+        f"[VISION] Endpoint: {QWEN_API_NAME}"
     )
+    if not GRADIO_AVAILABLE:
+        raise RuntimeError(
+            "gradio-client is not installed. "
+            "Check requirements.txt"
+        )
+    if not Path(image_path).exists():
+        raise RuntimeError(
+            f"Image not found: {image_path}"
+        )
+    # --------------------------------------------------------
+    # CONNECT
+    # --------------------------------------------------------
     try:
         client = Client(
             QWEN_SPACE
@@ -219,11 +241,14 @@ def qwen_analyze_image(
         )
     except Exception as e:
         logger.exception(
-            "[VISION] Failed to connect to Qwen Space"
+            "[VISION] Connection failed"
         )
         raise RuntimeError(
-            f"Could not connect to Qwen Space: {e}"
+            f"Qwen Space connection failed: {e}"
         )
+    # --------------------------------------------------------
+    # PREPARE FILE
+    # --------------------------------------------------------
     try:
         print(
             "[VISION] Preparing image..."
@@ -231,99 +256,129 @@ def qwen_analyze_image(
         image_input = handle_file(
             image_path
         )
+    except Exception as e:
+        logger.exception(
+            "[VISION] Image preparation failed"
+        )
+        raise RuntimeError(
+            f"Image preparation failed: {e}"
+        )
+    # --------------------------------------------------------
+    # CALL QWEN
+    # --------------------------------------------------------
+    try:
         print(
             "[VISION] Sending image to Qwen..."
         )
         result = client.predict(
-            image_input,
-            VISION_PROMPT,
-            api_name=QWEN_API_NAME,
+            image_path=image_input,
+            text_input=VISION_PROMPT,
+            api_name=QWEN_API_NAME
         )
-        print(
-            "[VISION] Qwen response received."
-        )
-        text = clean_qwen_result(
-            result
-        )
-        if not text:
-            raise RuntimeError(
-                "Qwen returned an empty response."
-            )
-        return text
     except Exception as e:
         logger.exception(
             "[VISION] Qwen inference failed"
         )
         raise RuntimeError(
-            f"Qwen inference error: {e}"
+            f"Qwen inference failed: {e}"
         )
+    # --------------------------------------------------------
+    # PROCESS RESPONSE
+    # --------------------------------------------------------
+    print(
+        "[VISION] Qwen response received."
+    )
+    text = clean_result(
+        result
+    )
+    if not text:
+        raise RuntimeError(
+            "Qwen returned an empty response."
+        )
+    print(
+        "[VISION] Analysis text received."
+    )
+    return text
+# ============================================================
+# ASYNC VISION WRAPPER
+# ============================================================
 async def analyze_with_vision(
-    filepath: Path,
+    filepath: Path
 ) -> str:
     return await asyncio.to_thread(
         qwen_analyze_image,
-        str(filepath),
+        str(filepath)
     )
 # ============================================================
-# TELEGRAM COMMANDS
+# /START
 # ============================================================
 async def start(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    context: ContextTypes.DEFAULT_TYPE
 ):
     if not update.message:
         return
-    text = (
-        f"🧠 MARKETLENS v{VERSION}\n\n"
-        "Vision Engine готов.\n\n"
-        "📸 Отправь скриншот TradingView.\n\n"
-        "Я:\n"
-        "1️⃣ сохраню график\n"
-        "2️⃣ отправлю его в Qwen Vision\n"
-        "3️⃣ получу технический анализ\n"
-        "4️⃣ покажу направление движения\n"
-        "5️⃣ дам BUY / SELL / WAIT\n\n"
-        "⚠️ Если график плохо виден, попрошу новый скриншот."
-    )
     await update.message.reply_text(
-        text
-    )
-async def help_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    if not update.message:
-        return
-    text = (
-        f"🧠 MARKETLENS v{VERSION}\n\n"
-        "/start — запустить бота\n"
-        "/help — помощь\n\n"
-        "📸 Просто отправь скриншот графика."
-    )
-    await update.message.reply_text(
-        text
+        f"""
+🧠 MARKETLENS v{VERSION}
+👁️ Vision Engine: READY
+🤖 Qwen Vision: READY
+📸 Отправь скриншот TradingView.
+Я:
+1️⃣ сохраню график
+2️⃣ передам изображение Qwen Vision
+3️⃣ определю тренд
+4️⃣ найду структуру рынка
+5️⃣ определю Support / Resistance
+6️⃣ оценю свечи и объём
+7️⃣ дам BUY / SELL / WAIT
+8️⃣ укажу Confidence
+Если график плохо виден —
+я попрошу новый скриншот.
+"""
     )
 # ============================================================
-# SCREENSHOT HANDLER
+# /HELP
+# ============================================================
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    if not update.message:
+        return
+    await update.message.reply_text(
+        f"""
+🧠 MARKETLENS v{VERSION}
+Команды:
+/start — запуск
+/help — помощь
+📸 Для анализа просто отправь
+скриншот торгового графика.
+"""
+    )
+# ============================================================
+# PHOTO HANDLER
 # ============================================================
 async def handle_photo(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    context: ContextTypes.DEFAULT_TYPE
 ):
     message = update.message
     if not message:
         return
     if not message.photo:
         return
-    filepath = None
     try:
         # ----------------------------------------------------
-        # GET HIGHEST QUALITY TELEGRAM PHOTO
+        # TELEGRAM FILE
         # ----------------------------------------------------
         photo = message.photo[-1]
         telegram_file = await context.bot.get_file(
             photo.file_id
         )
+        # ----------------------------------------------------
+        # FILE NAME
+        # ----------------------------------------------------
         now = datetime.now(
             timezone.utc
         )
@@ -344,6 +399,9 @@ async def handle_photo(
             SCREENSHOTS_DIR /
             filename
         )
+        # ----------------------------------------------------
+        # DOWNLOAD
+        # ----------------------------------------------------
         await telegram_file.download_to_drive(
             custom_path=str(filepath)
         )
@@ -358,74 +416,70 @@ async def handle_photo(
             f"[SCREENSHOT] Size: {size_kb:.1f} KB"
         )
         # ----------------------------------------------------
-        # INITIAL RESPONSE
+        # STATUS MESSAGE
         # ----------------------------------------------------
-        status_message = await message.reply_text(
+        status = await message.reply_text(
             "📸 СКРИНШОТ ПОЛУЧЕН\n\n"
-            f"💾 Файл: {filename}\n"
-            f"📦 Размер: {size_kb:.1f} KB\n\n"
-            "🧠 MarketLens Vision v0.9\n"
-            "👁️ Qwen Vision анализирует график...\n\n"
-            "⏳ Подожди несколько секунд."
+            f"💾 {filename}\n"
+            f"📦 {size_kb:.1f} KB\n\n"
+            "🧠 MarketLens Vision v0.9.1\n"
+            "👁️ Отправляю график в Qwen Vision...\n\n"
+            "⏳ Анализ..."
         )
         # ----------------------------------------------------
         # VISION
         # ----------------------------------------------------
-        print(
-            "[VISION] Starting analysis..."
-        )
         try:
+            print(
+                "[VISION] Starting analysis..."
+            )
             result = await analyze_with_vision(
                 filepath
             )
-        except Exception as vision_error:
+        except Exception as e:
             logger.exception(
                 "[VISION ERROR]"
             )
-            await status_message.edit_text(
+            await status.edit_text(
                 "❌ Vision Engine не смог обработать график.\n\n"
-                f"Ошибка: {type(vision_error).__name__}\n\n"
-                f"{str(vision_error)[:1200]}\n\n"
+                f"Ошибка: {type(e).__name__}\n\n"
+                f"{str(e)[:1500]}\n\n"
                 "Проверь Render Logs."
             )
             return
         # ----------------------------------------------------
-        # CHECK FOR NEW SCREENSHOT
+        # NEW SCREENSHOT REQUEST
         # ----------------------------------------------------
-        normalized = result.upper()
+        upper_result = result.upper()
         if (
             "NEED_NEW_SCREENSHOT"
-            in normalized
-            or
-            "НЕДОСТАТОЧНО"
-            in normalized
+            in upper_result
         ):
-            await status_message.edit_text(
+            await status.edit_text(
                 "📸 НУЖЕН НОВЫЙ СКРИНШОТ\n\n"
-                "Qwen Vision не видит достаточно данных "
-                "для надёжного анализа.\n\n"
-                "Отправь более чёткий график TradingView."
+                "Qwen Vision не смог получить "
+                "достаточно информации с графика.\n\n"
+                "Отправь более чёткий скриншот TradingView."
             )
             return
         # ----------------------------------------------------
-        # SEND ANALYSIS
+        # FINAL MESSAGE
         # ----------------------------------------------------
         final_text = (
-            "🧠 MARKETLENS v0.9\n"
-            "━━━━━━━━━━━━━━━━━━\n\n"
-            "👁️ QWEN VISION ANALYSIS\n\n"
+            "🧠 MARKETLENS v0.9.1\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
             f"{result}\n\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "⚠️ Анализ является вероятностным, "
-            "а не гарантией движения цены."
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "⚠️ Сигнал является вероятностным "
+            "анализом и не гарантирует движение цены."
         )
-        # Telegram message limit protection
+        # Telegram limit
         if len(final_text) > 3900:
             final_text = (
                 final_text[:3850]
                 + "\n\n…"
             )
-        await status_message.edit_text(
+        await status.edit_text(
             final_text
         )
         print(
@@ -437,8 +491,8 @@ async def handle_photo(
         )
         try:
             await message.reply_text(
-                "❌ Произошла ошибка.\n\n"
-                f"Ошибка: {type(e).__name__}\n"
+                "❌ Ошибка обработки изображения.\n\n"
+                f"{type(e).__name__}: "
                 f"{str(e)[:1000]}"
             )
         except Exception:
@@ -448,32 +502,31 @@ async def handle_photo(
 # ============================================================
 async def handle_text(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    context: ContextTypes.DEFAULT_TYPE
 ):
     if not update.message:
         return
-    text = update.message.text or ""
+    text = (
+        update.message.text
+        or ""
+    )
     if text.startswith("/"):
         return
     await update.message.reply_text(
-        "📸 Отправь мне скриншот графика TradingView.\n\n"
-        "Я отправлю его в Vision Engine "
-        "для технического анализа."
+        "📸 Отправь скриншот графика TradingView."
     )
 # ============================================================
-# ERROR HANDLER
+# TELEGRAM ERROR HANDLER
 # ============================================================
 async def error_handler(
     update: object,
-    context: ContextTypes.DEFAULT_TYPE,
+    context: ContextTypes.DEFAULT_TYPE
 ):
     error = context.error
     logger.error(
         "Telegram error: %s",
-        error,
+        error
     )
-    # Conflict is usually caused by another polling
-    # process using the same Telegram bot token.
     if (
         error
         and
@@ -481,7 +534,8 @@ async def error_handler(
     ):
         logger.warning(
             "Telegram polling conflict: "
-            "another bot instance may be running."
+            "another instance of this bot "
+            "is using the same token."
         )
 # ============================================================
 # MAIN
@@ -489,73 +543,6 @@ async def error_handler(
 def main():
     print(
         f"🧠 MarketLens Vision v{VERSION} starting..."
-    )
-    print(
-        f"🤖 Qwen Space: {QWEN_SPACE}"
-    )
-    print(
-        f"🔌 Qwen API: {QWEN_API_NAME}"
-    )
-    # --------------------------------------------------------
-    # START RENDER HEALTH SERVER
-    # --------------------------------------------------------
-    Thread(
-        target=start_http_server,
-        daemon=True,
-    ).start()
-    # --------------------------------------------------------
-    # TELEGRAM APPLICATION
-    # --------------------------------------------------------
-    application = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .build()
-    )
-    # --------------------------------------------------------
-    # COMMANDS
-    # --------------------------------------------------------
-    application.add_handler(
-        CommandHandler(
-            "start",
-            start,
-        )
-    )
-    application.add_handler(
-        CommandHandler(
-            "help",
-            help_command,
-        )
-    )
-    # --------------------------------------------------------
-    # PHOTO HANDLER
-    # --------------------------------------------------------
-    application.add_handler(
-        MessageHandler(
-            filters.PHOTO,
-            handle_photo,
-        )
-    )
-    # --------------------------------------------------------
-    # TEXT HANDLER
-    # --------------------------------------------------------
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT
-            & ~filters.COMMAND,
-            handle_text,
-        )
-    )
-    # --------------------------------------------------------
-    # ERROR HANDLER
-    # --------------------------------------------------------
-    application.add_error_handler(
-        error_handler
-    )
-    # --------------------------------------------------------
-    # STATUS
-    # --------------------------------------------------------
-    print(
-        f"🧠 MarketLens Vision v{VERSION} started"
     )
     print(
         "📸 Screenshot Engine: READY"
@@ -569,11 +556,71 @@ def main():
         )
     else:
         print(
-            "👁️ Vision Engine: OFFLINE "
-            "(gradio-client missing)"
+            "👁️ Vision Engine: OFFLINE"
         )
     print(
         f"🤖 Qwen Space: {QWEN_SPACE}"
+    )
+    print(
+        f"🔌 Qwen Endpoint: {QWEN_API_NAME}"
+    )
+    # --------------------------------------------------------
+    # RENDER SERVER
+    # --------------------------------------------------------
+    Thread(
+        target=start_http_server,
+        daemon=True
+    ).start()
+    # --------------------------------------------------------
+    # TELEGRAM
+    # --------------------------------------------------------
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .build()
+    )
+    # --------------------------------------------------------
+    # COMMANDS
+    # --------------------------------------------------------
+    application.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
+    application.add_handler(
+        CommandHandler(
+            "help",
+            help_command
+        )
+    )
+    # --------------------------------------------------------
+    # PHOTO
+    # --------------------------------------------------------
+    application.add_handler(
+        MessageHandler(
+            filters.PHOTO,
+            handle_photo
+        )
+    )
+    # --------------------------------------------------------
+    # TEXT
+    # --------------------------------------------------------
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT
+            & ~filters.COMMAND,
+            handle_text
+        )
+    )
+    # --------------------------------------------------------
+    # ERRORS
+    # --------------------------------------------------------
+    application.add_error_handler(
+        error_handler
+    )
+    print(
+        f"🧠 MarketLens Vision v{VERSION} started"
     )
     # --------------------------------------------------------
     # POLLING
