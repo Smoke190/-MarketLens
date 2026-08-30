@@ -15,11 +15,6 @@ from telegram.ext import (
     filters,
 )
 
-
-# ==================================================
-# SETTINGS
-# ==================================================
-
 TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", "10000"))
 
@@ -29,26 +24,21 @@ VISION_URL = (
 )
 
 SCREENSHOT_DIR = "screenshots"
-
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
 
-# ==================================================
-# RENDER HEALTH SERVER
-# ==================================================
+# ==============================
+# RENDER SERVER
+# ==============================
 
 class HealthHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.send_response(200)
-        self.send_header(
-            "Content-Type",
-            "text/plain"
-        )
+        self.send_header("Content-Type", "text/plain")
         self.end_headers()
-
         self.wfile.write(
-            b"MarketLens Vision v0.4 is running"
+            b"MarketLens Vision is running"
         )
 
     def log_message(self, format, *args):
@@ -56,18 +46,16 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 
 def start_web_server():
-
     server = HTTPServer(
         ("0.0.0.0", PORT),
         HealthHandler
     )
-
     server.serve_forever()
 
 
-# ==================================================
-# START
-# ==================================================
+# ==============================
+# TELEGRAM
+# ==============================
 
 async def start(
     update: Update,
@@ -76,27 +64,18 @@ async def start(
 
     await update.message.reply_text(
         "🧠 MARKETLENS v0.4\n\n"
-        "Vision Engine подключён.\n\n"
-        "📸 Отправь скриншот TradingView.\n\n"
-        "Я проанализирую:\n"
-        "• тренд\n"
-        "• структуру\n"
-        "• поддержку\n"
-        "• сопротивление\n"
-        "• свечи\n"
-        "• объём\n"
-        "• основной сценарий"
+        "Vision Engine готов.\n\n"
+        "📸 Отправь скриншот TradingView."
     )
 
 
-# ==================================================
+# ==============================
 # VISION
-# ==================================================
+# ==============================
 
 def analyze_chart(image_path):
 
     with open(image_path, "rb") as f:
-
         image_bytes = f.read()
 
     image_base64 = base64.b64encode(
@@ -104,23 +83,21 @@ def analyze_chart(image_path):
     ).decode("utf-8")
 
     prompt = """
-Ты — Technical Engine системы MarketLens.
+Ты — Technical Engine MarketLens.
 
-Проанализируй предоставленный скриншот
-торгового графика.
+Проанализируй торговый график на изображении.
 
-Отвечай ТОЛЬКО по тому, что реально видно
-на изображении.
+Определи только то, что реально видно.
 
-Определи:
+Нужно определить:
 
 1. Актив / валютную пару.
 2. Таймфрейм.
-3. Текущее направление:
-   ВВЕРХ / ВНИЗ / БОКОВИК / НЕОПРЕДЕЛЁННО.
+3. Направление:
+ВВЕРХ / ВНИЗ / БОКОВИК / НЕОПРЕДЕЛЁННО.
 
 4. Рыночную структуру:
-   HH, HL, LH, LL.
+HH / HL / LH / LL.
 
 5. Ближайшую поддержку.
 
@@ -128,9 +105,9 @@ def analyze_chart(image_path):
 
 7. Свечную структуру.
 
-8. Есть ли разворотный паттерн.
+8. Разворотные паттерны, если они действительно видны.
 
-9. Объём, если он виден.
+9. Объём, если он присутствует.
 
 10. Импульс или коррекцию.
 
@@ -140,18 +117,15 @@ def analyze_chart(image_path):
 
 13. Условия подтверждения.
 
-14. Условия отмены сценария.
+14. Условия отмены.
 
-ВАЖНО:
-
-Не придумывай цены, уровни или паттерны,
-которых невозможно определить по изображению.
+Не выдумывай значения.
 
 Если график плохо виден, напиши:
 
 НЕДОСТАТОЧНО ДАННЫХ — НУЖЕН НОВЫЙ СКРИНШОТ.
 
-Формат ответа:
+Формат:
 
 📊 MARKETLENS
 
@@ -174,9 +148,6 @@ def analyze_chart(image_path):
 ❌ Отмена:
 
 📌 Итог:
-
-Не обещай прибыль и не утверждай,
-что движение цены гарантировано.
 """
 
     payload = {
@@ -205,60 +176,72 @@ def analyze_chart(image_path):
         timeout=180
     )
 
+    # Подробный вывод ошибки
     if response.status_code != 200:
-    print(
-        f"[VISION ERROR] HTTP {response.status_code}"
-    )
-    print(
-        f"[VISION ERROR] Response: {response.text}"
-    )
 
-    raise RuntimeError(
-        f"Vision HTTP {response.status_code}: "
-        f"{response.text[:500]}"
-    )
+        print(
+            f"[VISION ERROR] HTTP "
+            f"{response.status_code}"
+        )
+
+        print(
+            "[VISION ERROR] Response:"
+        )
+
+        print(
+            response.text[:2000]
+        )
+
+        raise RuntimeError(
+            f"Vision HTTP "
+            f"{response.status_code}"
+        )
 
     result = response.json()
+
+    print(
+        "[VISION] Response received"
+    )
 
     return extract_result(result)
 
 
-# ==================================================
-# RESULT PARSER
-# ==================================================
+# ==============================
+# RESULT
+# ==============================
 
 def extract_result(result):
 
-    output = result.get("output")
+    if "output" in result:
 
-    if output is not None:
+        output = result["output"]
 
         if isinstance(output, str):
             return output
 
         return str(output)
 
-    data = result.get("data")
+    if "data" in result:
 
-    if data:
+        data = result["data"]
 
         if isinstance(data, list):
 
-            first = data[0]
+            if len(data) > 0:
 
-            if isinstance(first, str):
-                return first
+                if isinstance(data[0], str):
+                    return data[0]
 
-            return str(first)
+                return str(data[0])
 
         return str(data)
 
     return str(result)
 
 
-# ==================================================
-# RECEIVE SCREENSHOT
-# ==================================================
+# ==============================
+# SCREENSHOT
+# ==============================
 
 async def receive_screenshot(
     update: Update,
@@ -267,20 +250,25 @@ async def receive_screenshot(
 
     message = update.message
 
-    if not message or not message.photo:
+    if not message:
+        return
+
+    if not message.photo:
         return
 
     try:
 
         await message.reply_text(
             "📸 Скриншот получен.\n\n"
-            "🧠 Vision Engine анализирует график..."
+            "🧠 Vision Engine анализирует..."
         )
 
         photo = message.photo[-1]
 
-        telegram_file = await context.bot.get_file(
-            photo.file_id
+        telegram_file = (
+            await context.bot.get_file(
+                photo.file_id
+            )
         )
 
         timestamp = datetime.utcnow().strftime(
@@ -290,7 +278,8 @@ async def receive_screenshot(
         user_id = message.from_user.id
 
         filename = (
-            f"chart_{user_id}_{timestamp}.jpg"
+            f"chart_{user_id}_"
+            f"{timestamp}.jpg"
         )
 
         filepath = os.path.join(
@@ -306,55 +295,43 @@ async def receive_screenshot(
             f"[SCREENSHOT] Saved: {filepath}"
         )
 
-        # Vision analysis
         analysis = analyze_chart(
             filepath
         )
 
-        if not analysis:
-            analysis = (
-                "❌ Vision Engine не вернул результат."
-            )
-
-        # Telegram limit
         if len(analysis) > 3900:
             analysis = analysis[:3900]
 
         await message.reply_text(
             analysis
             + "\n\n"
-            "⚠️ Это технический анализ графика, "
-            "а не гарантия движения цены."
-        )
-
-        print(
-            "[VISION] Analysis completed"
+            "⚠️ Технический анализ не является "
+            "гарантией движения цены."
         )
 
     except Exception as error:
 
         print(
-            f"[ERROR] {type(error).__name__}: {error}"
+            f"[ERROR] {type(error).__name__}: "
+            f"{error}"
         )
 
         await message.reply_text(
-            "❌ Vision Engine не смог обработать "
-            "график.\n\n"
-            f"Ошибка: {type(error).__name__}\n\n"
-            "Попробуй отправить скриншот ещё раз."
+            "❌ Vision Engine не смог "
+            "обработать график.\n\n"
+            f"Ошибка: {type(error).__name__}"
         )
 
 
-# ==================================================
+# ==============================
 # MAIN
-# ==================================================
+# ==============================
 
 def main():
 
     if not TOKEN:
-
         raise RuntimeError(
-            "BOT_TOKEN не найден в Environment Variables"
+            "BOT_TOKEN не найден"
         )
 
     threading.Thread(
@@ -388,7 +365,7 @@ def main():
     )
 
     print(
-        "🧠 MarketLens Vision v0.4 started"
+        "🧠 MarketLens Vision started"
     )
 
     app.run_polling()
