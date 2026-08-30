@@ -205,7 +205,18 @@ def analyze_chart(image_path):
         timeout=180
     )
 
-    response.raise_for_status()
+    if response.status_code != 200:
+    print(
+        f"[VISION ERROR] HTTP {response.status_code}"
+    )
+    print(
+        f"[VISION ERROR] Response: {response.text}"
+    )
+
+    raise RuntimeError(
+        f"Vision HTTP {response.status_code}: "
+        f"{response.text[:500]}"
+    )
 
     result = response.json()
 
