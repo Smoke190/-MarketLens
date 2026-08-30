@@ -20,7 +20,7 @@ CONFIG
 
 =========================
 
-BOT_TOKEN = os.environ.get(“BOT_TOKEN”)
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 VISION_SPACE = “developer0hye/Qwen2.5-VL-7B-Instruct”
 
