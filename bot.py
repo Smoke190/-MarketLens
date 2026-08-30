@@ -4,24 +4,11 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from telegram import Update
-from telegram.ext import (
-Application,
-CommandHandler,
-MessageHandler,
-ContextTypes,
-filters,
-)
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 from gradio_client import Client, handle_file
 
-=========================
-
-CONFIG
-
-=========================
-
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-
+BOT_TOKEN = os.environ.get(“BOT_TOKEN”)
 VISION_SPACE = “developer0hye/Qwen2.5-VL-7B-Instruct”
 
 PORT = int(os.environ.get(“PORT”, “10000”))
@@ -29,145 +16,138 @@ PORT = int(os.environ.get(“PORT”, “10000”))
 SCREENSHOT_DIR = “screenshots”
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
-=========================
-
-HTTP SERVER FOR RENDER
-
-=========================
-
 class HealthHandler(BaseHTTPRequestHandler):
 
 def do_GET(self):
     self.send_response(200)
-    self.send_header("Content-Type", "text/plain; charset=utf-8")
+    self.send_header("Content-Type", "text/plain")
     self.end_headers()
     self.wfile.write(b"MarketLens is alive")
 def log_message(self, format, *args):
-    return
+    pass
 
 def start_http_server():
 server = HTTPServer((“0.0.0.0”, PORT), HealthHandler)
-print(f”HTTP server started on port {PORT}”, flush=True)
+print(“HTTP server started on port “ + str(PORT), flush=True)
 server.serve_forever()
 
-=========================
+def analyze_chart(image_path):
 
-VISION ENGINE
-
-=========================
-
-def analyze_chart(image_path: str) -> str:
-
-print("[VISION] Connecting to Qwen Space...", flush=True)
+print("[VISION] Connecting to Qwen...", flush=True)
 client = Client(VISION_SPACE)
 prompt = """
 
-Analyze this TradingView trading chart.
+Ты технический аналитик.
 
-Give a concise technical analysis.
+Проанализируй изображение графика TradingView.
 
-Identify:
+Определи:
 
-1. Market trend
-2. Current market structure
-3. Nearest support
-4. Nearest resistance
-5. Important candlestick behavior
-6. Volume behavior if visible
-7. Most likely direction: UP, DOWN, or RANGE
-8. Confidence from 0 to 100%
-9. What would invalidate the scenario
+1. Таймфрейм, если он виден.
+2. Основной тренд.
+3. Рыночную структуру.
+4. Ближайшую поддержку.
+5. Ближайшее сопротивление.
+6. Поведение последних свечей.
+7. Объём, если он виден.
+8. Возможное направление движения: UP, DOWN или RANGE.
+9. Уверенность от 0 до 100%.
+10. Уровень, пробой которого отменит сценарий.
 
-Do not invent information that is not visible on the chart.
+Не придумывай данные, которых нет на изображении.
 
-Answer in Russian.
+Ответ дай на русском языке.
+Будь кратким и конкретным.
 “””
 
-print("[VISION] Sending chart...", flush=True)
+print("[VISION] Sending image...", flush=True)
 result = client.predict(
     image_path=handle_file(image_path),
     text_input=prompt,
     api_name="/qwen_vl_inference"
 )
-print("[VISION] Response received", flush=True)
+print("[VISION] Result received", flush=True)
 if result is None:
-    raise RuntimeError("Qwen returned an empty response")
+    raise RuntimeError("Qwen returned empty result")
 return str(result)
-
-=========================
-
-TELEGRAM
-
-=========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 await update.message.reply_text(
     "🧠 MARKETLENS v0.6\n\n"
-    "Я готов анализировать TradingView.\n\n"
+    "Готов анализировать TradingView.\n\n"
     "📸 Отправь скриншот графика."
 )
 
 async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-message = update.message
-if not message or not message.photo:
-    return
 try:
+    message = update.message
+    if message is None or not message.photo:
+        return
     await message.reply_text(
         "📸 СКРИНШОТ ПОЛУЧЕН\n\n"
-        "💾 Сохраняю изображение...\n"
-        "🧠 Подготавливаю Vision-анализ..."
+        "💾 Сохраняю изображение..."
     )
     photo = message.photo[-1]
-    file = await photo.get_file()
-    user_id = update.effective_user.id if update.effective_user else 0
+    telegram_file = await photo.get_file()
+    user_id = 0
+    if update.effective_user:
+        user_id = update.effective_user.id
     timestamp = datetime.now(timezone.utc).strftime(
         "%Y%m%d_%H%M%S_%f"
     )
-    filename = f"chart_{user_id}_{timestamp}.jpg"
+    filename = (
+        "chart_"
+        + str(user_id)
+        + "_"
+        + timestamp
+        + ".jpg"
+    )
     image_path = os.path.join(
         SCREENSHOT_DIR,
         filename
     )
-    await file.download_to_drive(image_path)
+    await telegram_file.download_to_drive(image_path)
     size = os.path.getsize(image_path)
     print(
-        f"[SCREENSHOT] Saved: {image_path} "
-        f"({size / 1024:.1f} KB)",
+        "[SCREENSHOT] Saved: "
+        + image_path
+        + " ("
+        + str(round(size / 1024, 1))
+        + " KB)",
         flush=True
     )
     await message.reply_text(
         "💾 Изображение сохранено.\n\n"
-        "🧠 Vision Engine анализирует график..."
+        "🧠 Qwen Vision анализирует график..."
     )
     result = analyze_chart(image_path)
     await message.reply_text(
         "🧠 MARKETLENS ANALYSIS\n\n"
         + result
     )
-except Exception as e:
+except Exception as error:
     print(
-        f"[ERROR] {type(e).__name__}: {e}",
+        "[VISION ERROR] "
+        + type(error).__name__
+        + ": "
+        + str(error),
         flush=True
     )
-    await message.reply_text(
+    await update.message.reply_text(
         "❌ Vision Engine не смог обработать график.\n\n"
-        f"Ошибка: {type(e).__name__}\n\n"
-        "Проверь Render Logs."
+        "Ошибка: "
+        + type(error).__name__
+        + "\n\n"
+        + str(error)
     )
-
-=========================
-
-MAIN
-
-=========================
 
 def main():
 
 if not BOT_TOKEN:
     raise RuntimeError(
-        "BOT_TOKEN environment variable is missing"
+        "BOT_TOKEN is not configured in Render Environment Variables"
     )
 threading.Thread(
     target=start_http_server,
